@@ -1,9 +1,4 @@
 #! /bin/sh
- perl wiki-to-book -c config-apple.yaml && \
- perl wiki-to-book -c config-android.yaml && \
- scp /Users/jfesler/ceremony/work/west-kingdom-ceremony-*.epub gigo.com:/var/www/stuff.gigo.com/
- echo done
- for x in `cd /Users/jfesler/ceremony/work/ && echo west-kingdom-ceremony*epub`; do 
-   echo http://stuff.gigo.com/$x
+ for BOOK in west-kingdom; do 
+   cd ../$BOOK && ./update
  done
-open -a ibooks /Users/jfesler/ceremony/work/west-kingdom-ceremony*apple*.epub

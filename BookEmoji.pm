@@ -1,5 +1,6 @@
 package BookEmoji;
 
+use FindBin qw($Bin);
 use JSON::Syck;
 use YAML::Syck;
 
@@ -16,7 +17,7 @@ sub _init {
 
     my ( $self) = @_;
     
-    $self->{file} ||= "emoji-data/emoji_pretty.json";
+    $self->{file} ||= "$Bin/emoji-data/emoji_pretty.json";
     my $data = JSON::Syck::LoadFile($self->{file}) or die "could not open file $self->{file}: $!  (perhaps you should ' git submodule add https://github.com/iamcal/emoji-data.git')";
 
     my %short;

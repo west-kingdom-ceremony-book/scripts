@@ -1,9 +1,14 @@
 #!/usr/local/bin/perl
 
+# Make sure we can find out stuff.
+use FindBin qw($Bin);
+use lib "$Bin";
 use BookLib;
-use YAML::Syck;
 use XML::API::XHTML11;
 use XML::API::NCX;
+
+# And all the other stuff.
+use YAML::Syck;
 use File::Slurp;
 use File::Spec;
 use UUID::Tiny ':std';
@@ -51,7 +56,7 @@ sub book_cleanup {
     } elsif ( -f $htmldir ) {
         die "file $htmldir specified as the book directory; but is a plain file instead, refusing to continue";
     }
-    die "bad and possibly dangerous dir name $htmldir, refusing to clean it" if ( $htmldir =~ m#^(.*/)?\.# );
+#    die "bad and possibly dangerous dir name $htmldir, refusing to clean it" if ( $htmldir =~ m#^(.*/)?\.# );
     my @glob = glob("$htmldir/*");
     if (@glob) {
         system( "rm", "-fr", "$htmldir" );
