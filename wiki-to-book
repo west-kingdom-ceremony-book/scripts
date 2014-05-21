@@ -1,0 +1,304 @@
+#!/usr/local/bin/perl
+
+use BookLib;
+use YAML::Syck;
+use XML::API::XHTML11;
+use XML::API::NCX;
+use File::Slurp;
+use File::Spec;
+use UUID::Tiny ':std';
+use Digest::MD5 qw(md5_hex);
+use Encode;
+use POSIX;
+
+use strict;
+use vars qw( $booklib );    # Main library
+
+binmode STDOUT, ":utf8";
+
+main();
+
+sub main {
+    my $booklib = new BookLib( \@ARGV );
+    print Dump($booklib);
+
+    $booklib->create_better_toc();
+    $booklib->scan_better_toc();
+
+    book_cleanup($booklib);
+    book_open($booklib);
+    book_write_pages($booklib);
+    book_write_images($booklib);
+    book_write_meta($booklib);
+    book_finalize($booklib);
+}
+
+sub book_open {
+    my $booklib     = shift;
+    my $templatedir = $booklib->templatedir();
+    my $htmldir     = $booklib->htmldir();
+    system( "rsync", "-a", "$templatedir/.", "$htmldir/.", "--exclude","*~" );
+}
+
+sub book_cleanup {
+    my $booklib  = shift;
+    my $htmldir  = $booklib->htmldir();
+    my $epubfile = $booklib->epubfile();
+    if ( !$htmldir ) {
+        die "book_cleanup() called without a dir name";
+    } elsif ( glob("$htmldir/*") ) {
+        die "dir $htmldir is not a book directory, refusing to continue" unless ( -f "$htmldir/mimetype" );
+    } elsif ( -f $htmldir ) {
+        die "file $htmldir specified as the book directory; but is a plain file instead, refusing to continue";
+    }
+    die "bad and possibly dangerous dir name $htmldir, refusing to clean it" if ( $htmldir =~ m#^(.*/)?\.# );
+    my @glob = glob("$htmldir/*");
+    if (@glob) {
+        system( "rm", "-fr", "$htmldir" );
+    }
+    system( "mkdir", "-p", $htmldir );
+    die "Could not mkdir -p $htmldir: $!" unless ( -d $htmldir );
+    unlink($epubfile);
+} ## end sub book_cleanup
+
+# Find all the pages.
+# Write all the pages.
+sub book_write_pages {
+    my ($booklib) = @_;
+    foreach my $key ( sort keys %{ $booklib->{good} } ) {
+        book_write_one_page( $booklib, $key );
+    }
+}
+
+# Inputs
+# $wikidir/$name.md
+# $cachedir/$anme.html
+#
+# Outputs
+# $htmldir/$name.html
+
+sub book_write_one_page {
+    my ( $booklib, $title ) = @_;
+
+#    print "write: $title\n";
+    my $name  = $booklib->title_to_filename($title);
+    my $text  = $booklib->read_md($title);
+    my $html  = $booklib->markdown_to_html( $text, 1, $title );
+    my $title = $booklib->get_title_from_md($text);
+
+    $html = $booklib->localize_images($html);
+    $html = $booklib->cleanup_html($html);
+    $html = $booklib->classify_blockquotes($html);
+
+    my $x = new XML::API::XHTML11( encoding => "UTF-8" );
+    $x->html_open();
+    $x->head_open();
+    $x->title($title);
+    $x->link( { type => "text/css", rel => "stylesheet", href => "index.css" } );
+    $x->head_close();
+
+    $x->body_open();
+    $x->_raw($html);
+    $x->body_close();
+    $x->html_close();
+
+    write_file( $booklib->OEBPS . "/$name.html", { binmode => ':utf8' }, $x );
+} ## end sub book_write_one_page
+
+# Copy the minimum set of images from cache to OEBPS
+sub book_write_images {
+    my ($booklib) = @_;
+    foreach my $key ( sort keys $booklib->{images} ) {
+        my ( $base64, $type, $extension ) = @{ $booklib->{images}{$key} };
+        system( "cp", $booklib->cachedir() . "/$base64.content", $booklib->OEBPS . "/$base64.$extension" );
+    }
+}
+
+sub book_finalize {
+    my $booklib = shift;
+    my $epub    = $booklib->epubfile();
+    my $htmldir = $booklib->htmldir();
+    print "epubfile is $epub\n";
+
+    my $abspath = File::Spec->rel2abs($epub);
+    die "failed to get abspath for $epub (unexpected error)" unless ($abspath);    # Not expected
+
+    unlink($abspath);
+    system("cd $htmldir && zip -v0Xq $abspath mimetype && zip -vXr9Dq $abspath *");
+    system( "ls", "-l", $abspath );
+
+}
+
+sub book_write_meta {
+    my $booklib = shift;
+    my $opf     = new XML::API::XHTML11( encoding => "UTF-8" );
+    my $e       = $booklib->{c}{epub};
+
+    $opf->package_open(
+        {
+
+            "xmlns"             => "http://www.idpf.org/2007/opf",
+            "xmlns:dc"          => "http://purl.org/dc/elements/1.1/",
+            "unique-identifier" => "bookid",
+            "version"           => "2.0"
+        }
+    );
+
+    my $uuid     = create_uuid_as_string(UUID_RANDOM);
+    my $metadata = new XML::API;                         # opf
+    
+    my $TIMESTAMP = strftime( '+%Y-%m-%d--%H:%M:%S UTC', gmtime time);
+    
+    my $unicode =  ($booklib->{c}->{options}->{unicode}) ? "apple/unicode" : "android/no-unicode";
+        
+    
+    $metadata->metadata_open( {} );
+    $metadata->dc__title( $e->{title} . " [BUILD $TIMESTAMP for $unicode]" );
+    $metadata->dc__creator( $e->{creator} );
+    $metadata->dc__source( $e->{source} );
+    $metadata->dc__rights( $e->{rights} );
+    $metadata->dc__identifier( { id => "bookid" }, $uuid );    # TODO Make this vary on MD5 of input (or random?)
+    $metadata->dc__language( $e->{language} );
+    $metadata->meta( { name => "cover", content => "cover-image" } );
+
+    my $manifest = new XML::API;                               #opf
+    $manifest->manifest_open();
+    $manifest->item( { "id" => "ncx",         "href" => "toc.ncx",    "media-type" => "application/x-dtbncx+xml" } );
+    $manifest->item( { "id" => "cover-image", "href" => "cover.png",  "media-type" => "image/png" } );
+    $manifest->item( { "id" => "css",         "href" => "index.css",  "media-type" => "text/css" } );
+    $manifest->item( { "id" => "cover",       "href" => "cover.html", "media-type" => "application/xhtml+xml" } );
+
+#    $manifest->item( { "id" => "notice",      "href" => "notice.html", "media-type" => "application/xhtml+xml" } );
+    $manifest->item( { "id" => "toc", "href" => "BetterToC.html", "media-type" => "application/xhtml+xml" } );
+
+    # Did we pick up any other images? such as emoji rendered via github?
+    foreach my $key ( sort keys $booklib->{images} ) {
+        my ( $base64, $type, $extension ) = @{ $booklib->{images}{$key} };
+        my $filename = "$base64.$extension";
+        my $id       = "b64_$base64";
+        $manifest->item( { "id" => $id, "href" => $filename, "media-type" => $type } );
+    }
+
+    my $spine = new XML::API;    # opf
+    $spine->spine_open( { toc => "ncx" } );
+    $spine->itemref( { "idref" => "cover" } );    # , "linear"=>"no"
+
+#    $spine->itemref( { "idref" => "notice" } );                # , "linear"=>"no"
+    $spine->itemref( { "idref" => "toc" } );
+
+    my $guide = new XML::API;                     # opf
+    $guide->guide_open();
+    $guide->reference( { href => "cover.html", type => "cover", title => "Cover" } );
+
+#    $guide->reference( { href => "notice.html", type => "copyright-page", title => "Copyright" } );
+    $guide->reference( { href => "BetterToC.html", type => "toc", title => "Table of Contents" } );
+
+    my $navmap         = new XML::API;            # ncx
+    my $navmap_counter = 1;
+    $navmap->navMap_open();
+    $navmap->_add( navpoint( $navmap_counter++, "Book cover", "cover.html" ) );
+
+#    $navmap->_add( navpoint( $navmap_counter++, "Notice",            "notice.html" ) );
+    $navmap->_add( navpoint( $navmap_counter++, "Table of Contents", "BetterToC.html" ) )
+      ;    # Trying to get this to show up despite the iPad wanting to take ownership for it
+
+    my %seen;
+    my @scan = $booklib->scan_toc_for_ncx("BetterToC");
+    
+    {
+     # Fake seen for BetterToC
+     my $link = "BetterToC";
+     my $filename = $booklib->title_to_filename($link) . ".html";
+     my $base64   = md5_hex( $booklib->title_to_filename($link) );
+     my $id       = "b64_$base64";
+     my $seen     = $seen{$filename}++;
+     }
+                                    
+                                    
+    
+    foreach my $aref (@scan) {
+        my ( $link, $text ) = @{$aref};
+        
+#        print "DEBUG	 link=$link text=$text\n";
+        my($left,$right) = split(m#[|]#,$link);
+        $right ||= $left;
+        
+
+        # Update manifest (each file in the publication)
+        # Update spine (reading order; no duplicates)
+        # Update guide (?)
+        # Update navmap (table of contents)
+        my $filename = $booklib->title_to_filename($link) . ".html";
+        my $base64   = md5_hex( $booklib->title_to_filename($link) );
+        my $id       = "b64_$base64";
+        my $seen     = $seen{$filename}++;
+
+        if ( !$seen ) {
+
+            # Only do these once per html file
+            $manifest->item( { "id" => $id, "href" => $filename, "media-type" => "application/xhtml+xml" } );
+            $spine->itemref( { idref => $id } );
+            $guide->reference( { href => $filename, type => "text", title => $text} );
+        }
+
+        # This allows dupes (We think) (And we want a complete TOC)
+        $navmap->_add( navpoint( $navmap_counter++, $text, $filename ) );
+    } ## end foreach my $aref (@scan)
+
+    $metadata->metadata_close();
+    $manifest->manifest_close();
+    $spine->spine_close();
+    $guide->guide_close();
+    $navmap->navMap_close();
+
+    $opf->_add( $metadata, $manifest, $spine, $guide );
+    $opf->package_close();
+    write_file( $booklib->OEBPS . "/content.opf", { binmode => ":utf8" }, $opf );
+
+    my $ncx = new XML::API::NCX( encoding => "UTF-8" );
+    $ncx->ncx_open( { xmlns => "http://www.daisy.org/z3986/2005/ncx/", version => "2005-1" } );
+    $ncx->head_open();
+    $ncx->meta( { name => "dtb:uid",            content => $uuid } );
+    $ncx->meta( { name => "dtb:depth",          content => "1" } );
+    $ncx->meta( { name => "dtb:totalPageCount", content => "0" } );
+    $ncx->meta( { name => "dtb:maxPageNumber",  content => "0" } );
+    $ncx->head_close();
+
+    $ncx->docTitle_open();
+    $ncx->text( $e->{title} );
+    $ncx->docTitle_close();
+    $ncx->_add($navmap);    # Generated somewhere up above
+
+    $ncx->ncx_close();
+
+#    breakpoint();
+    write_file( $booklib->OEBPS . "/toc.ncx", { binmode => ":utf8" }, $ncx );
+
+} ## end sub book_write_meta
+
+my %navPoints;
+
+sub navpoint {
+    my ( $counter, $text, $src ) = @_;
+
+    my $playOrder = ( exists $navPoints{$src} ) ? $navPoints{$src} : ( 1 + scalar keys %navPoints );
+    $navPoints{$src} = $playOrder;
+    
+    # Convert leading ". " to hard space
+    if ($text =~ /^((\. )+)/) {
+      my $found = $1;
+      my $replace = $1;
+      $replace =~ s/\./\xa0\xa0/g;
+      substr($text,0,length($found))=$replace;
+    }
+
+    my $x = new XML::API;
+    $x->navPoint_open( { id => "navpoint-$counter", playOrder => $playOrder } );
+    $x->navLabel_open();
+    $x->text($text);
+    $x->navLabel_close();
+    $x->content( { src => $src } );
+    $x->navPoint_close();
+    return $x;
+}
+

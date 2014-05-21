@@ -1,0 +1,16 @@
+epub:
+  title: West Kingdom Ceremony Book
+  creator: Jason Fesler
+  source: https://github.com/jfesler/west-kingdom-ceremony
+  rights: License TBD
+  language: en-US
+options:
+  unicode: 1
+github: "jfesler/west-kingdom-ceremony.wiki"
+paths:
+  topdir: /Users/jfesler/ceremony
+  wikidir: west-kingdom-ceremony.wiki
+  cachedir: work/west-kingdom-ceremony.cache
+  epubfile: work/west-kingdom-ceremony-apple.epub
+  htmldir: work/west-kingdom-ceremony.html
+  templatedir: west-kingdom-ceremony/template

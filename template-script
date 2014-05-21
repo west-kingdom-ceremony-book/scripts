@@ -1,0 +1,18 @@
+#!/usr/local/bin/perl
+
+use Getopt::Long;
+use YAML::Syck;
+
+use lib ".";
+use BookLib;
+
+use strict;
+
+$|=1;
+
+my %argv = get_options();
+my $c    = LoadFile( $argv{"c"} );
+my $u    = LoadFile( $argv{"u"} );
+
+chdir( $c->{paths}{top} ) or die "could not chdir $c->{paths}{top}";
+
